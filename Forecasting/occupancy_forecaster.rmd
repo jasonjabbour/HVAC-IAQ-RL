@@ -1,0 +1,233 @@
+---
+title: "Occupancy Forecaster"
+author: ""
+date: "3/15/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Loading packages
+```{r include=FALSE}
+#Load Libraries
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(tseries)
+library(forecast)
+#For autoplot
+library(ggfortify)
+```
+
+# Set Global Variables
+```{r}
+#Global Variables
+school = 'UVA'
+room = '211 Olsson'
+start_date = '2021-09-01 00:00:00'
+end_date = '2021-12-01 00:00:00'
+```
+
+# Load and Clean Motion Data
+```{r}
+#Load Motion Data
+motion_data = read.table('../Data/motion_data.csv',header=T,sep=',')
+
+#Select Date and Value
+motion_data = motion_data %>%
+  filter(location_general==school && location_specific==room) %>%
+  select(time,value)
+
+#Remove Duplicate Time Stamps
+motion_data = motion_data %>%  distinct(time, .keep_all = T)
+
+#Convert Time String to Time Object and Strip Extra Content
+motion_data$time = strptime(motion_data$time,format = '%Y-%m-%d %H:%M:%OS')
+```
+
+# Bin Data into Hours and Sum
+```{r}
+#Bin the Sum of Motion Values into same hour
+grouped_motion_data = motion_data %>% 
+  mutate(rounded_time = trunc(time, "hours")) %>% 
+  group_by(rounded_time) %>% 
+  summarise(value=sum(value))
+```
+
+# Plot all Data
+```{r}
+#Plot the Time Series
+grouped_motion_data %>% 
+  ggplot(aes(x=as.Date(rounded_time), y=value))+
+  geom_line()
+```
+
+# Select Starting Date
+```{r}
+#Convert to Date
+grouped_motion_data$rounded_time = as.Date(grouped_motion_data$rounded_time)
+
+#Choose Start Date
+grouped_motion_data = grouped_motion_data %>%
+  filter(rounded_time >= as.Date(start_date) & rounded_time <= as.Date(end_date))
+```
+
+# Plot Date Starting at New Date
+```{r}
+#Plot the Time Series
+grouped_motion_data %>% 
+  ggplot(aes(x=as.Date(rounded_time), y=value))+
+  geom_line()+
+  ylab("Sum Motion Occurances In Hour")+
+  xlab("Date")+
+  labs(title="Time Series of Motion Date")
+```
+
+
+# Investigate Seasonality with ACF
+```{r}
+#Make time series object
+motion_ts = ts(grouped_motion_data$value)
+
+#ACF
+ggAcf(motion_ts)
+```
+
+Control for seasonality before controlling for trends. The Autocorrelation Function (ACF) shows the correlation of data points at different lags (correlation of points to their previous selves). We see repeated peaks. The dotted line shows that a previous point is significant in predicting the future. We need to remove seasonality by modeling it.
+
+# Investigate Seasonality using a Periodogram
+```{r}
+motion_periodogram = spec.pgram(motion_ts, spans=9, demean = T, log='no')
+
+#Find the max peak
+max_omega =
+  motion_periodogram$freq[which(motion_periodogram$spec==max(motion_periodogram$spec))]
+
+#The peak is:
+max_omega
+
+#The period is:
+1/max_omega
+```
+
+Seasons repeating every 24 hours (1 day). This is a daily season. Since we observe smoothly varying seasons, we can capture seasonality by using trigonometric functions. 
+
+# Build A Model to Capture Seasonality
+```{r}
+#Make T
+t = c(seq(1,dim(grouped_motion_data)[1]))
+#FIX ME (Must change if you remove points for forecasting)
+
+motion_season_model = lm(motion_ts ~ sin(2*pi*t/24) + cos(2*pi*t/24))
+summary(motion_season_model)
+```
+
+Accounting for seasonality is significant
+
+# Visualize Model Capturing Seasonality
+```{r}
+grouped_motion_data %>% 
+  ggplot(aes(x=rounded_time, y=value))+
+  geom_line()+
+  geom_line(aes(x=rounded_time,
+                y=motion_season_model$fitted.values, color="red"), size=1)+
+  ylab("Motion Occurances Sum Values in Hour")+
+  xlab("Time (Hours)")+
+  labs(title="Motion Season Model")
+```
+
+
+# Investigate Trends
+```{r}
+motion_trend_model = lm(motion_ts ~ t)
+summary(motion_trend_model)
+```
+
+Time is a significant predictor. Therefore, we can capture trends by incorporating timesteps into our model
+
+# Plot Model that Captures Trends
+```{r}
+grouped_motion_data %>% 
+  ggplot(aes(x=rounded_time, y=value))+
+  geom_line()+
+  stat_smooth(method='lm',col="red")+
+  ylab("Motion Occurances Sum Values in Hour")+
+  xlab("Time (Hours)")+
+  labs(title="Motion Trend Model")
+```
+
+Slight increase likely due to more students on grounds after COVID. 
+
+# Trend Model Diagnostics Sanity Check
+```{r}
+autoplot(motion_trend_model, labels.id=NULL)
+```
+
+Non-guassian tail.
+
+# Capture Seasonality and Trends
+```{r}
+motion_season_trend_model = lm(motion_ts ~ t + sin(2*pi*t/24) + cos(2*pi*t/24))
+summary(motion_season_trend_model)
+```
+
+Time and Seasonality are significant predictors of motion
+
+# Plot Season and Trend Model
+```{r}
+grouped_motion_data %>% 
+  ggplot(aes(x=rounded_time, y=value))+
+  geom_line()+
+  geom_line(aes(x=rounded_time,
+                y=motion_season_trend_model$fitted.values, 
+                color="red",size=.5))+
+  ylab("Motion Occurances Sum Values in Hour")+
+  xlab("Time (Hours)")+
+  labs(title="Motion Season and Trend Model")
+```
+
+# Determine Auto-Regressive and Moving Average Components
+
+## Plot Residuals of Previous Model
+```{r}
+motion_season_trend_e = ts(motion_season_trend_model$residuals)
+#plot residuals
+autoplot(motion_season_trend_e, xlab="Time", ylab="Residuals")+
+  labs(title="Motion Trend & Season Model Residuals")
+```
+
+Modeling for trends and seasonality does not account for autocorrelation. To account for the residuals of our model that are not IID use and AR model. We must know how far back our residuals have "memory" by using an ACF and PACF. 
+
+## ACF and PACF on the Residuals of Model
+```{r}
+ggAcf(motion_season_trend_e)
+ggPacf(motion_season_trend_e)
+
+```
+
+Since both the ACF and the PACF look sinusoidal, we should use an ARMA model. Since the PACF becomes insignificant after the 2nd lag, use AR(2). Since the ACF becomes insignificant after the 5th lag, use MA(5)
+
+# Build ARMA Model
+```{r}
+motion_arma2_5 = arima(motion_season_trend_e, order =c(2,0,5))
+summary(motion_arma2_5)
+AIC(motion_arma2_5) #15597.8
+```
+
+#Autoselect Model
+```{r}
+motion_auto = auto.arima(motion_season_trend_e)
+summary(motion_auto)
+#ARIMA(3,0,1) 15604 
+```
+
+The automatic selection chose ARMA(3,1) which performed worse than an ARMA(2,5) in terms of AIC. 
+
+```{r}
+forecast1 = predict(motion_auto,30)
+
+```
+
