@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
+import yaml
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -113,7 +114,7 @@ def build_random_forest_model(df):
     
         #Evaluate Model
         print(f'Confusion Matrix (TP, FP, FN, TN): \n\n{confusion_matrix(y_test, y_pred)}')
-        print(f'Classification Report: \n\n{classification_report(y_test, y_pred)}')
+        # print(f'Classification Report: \n\n{classification_report(y_test, y_pred)}')
         print(f'Accuracy Score: \n\n{accuracy_score(y_test, y_pred)}')
 
     print('>> Random Forest Model has been trained. <<')
@@ -146,7 +147,63 @@ def run_occupancy_forecaster(production=PRODUCTION):
 
     #save the model
     MODEL = rf_model
+
+def plot_week():
+    '''Plots the prediction of a week'''
+
+    days_lst = ['Monday', 'Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+    days_lst_abr = ['M', 'T','W','Th','F','Sat','Sun']
+    quarterhour_lst = ['00','15','30','45']
+    occupancy_output_list_of_dicts = []
+
+    #Predict the occupancy for a week
+    for day in range(len(days_lst)):
+        for hour in range(24):
+            for quarterhour in range(len(quarterhour_lst)):
+                #Create new empty dictionary and initialize variables
+                occupancy_output_dict = {}
+                name = ''
+                end_hour = ''
+                color = ''
+
+                #Make prediction
+                occupancy_output = make_occupancy_prediction(days_lst[day],hour,int(quarterhour_lst[quarterhour]))
+
+                #Name the event
+                if int(occupancy_output):
+                    name = 'occupied'
+                    color = '29EE65' #Green
+                else:
+                    name = 'vacant'
+                    color = '#D0D0D0' #Gray
+
+                #Create time interval (remember to wrap around) 
+                if quarterhour_lst[quarterhour] == '45':
+                    end_hour = str((hour+1)%24)
+                else:
+                    end_hour = str(hour)
+                
+                #Since event must start before it ends
+                if not ((str(hour) == '23') and (quarterhour_lst[quarterhour] == '45')):
+
+                    #Save required dictionary for pdfschedule
+                    occupancy_output_dict['name'] = name
+                    occupancy_output_dict['days'] = days_lst_abr[day]
+                    
+                    #Time must be in 19:30-20:30 format
+                    occupancy_output_dict['time'] = str(hour)+':' + quarterhour_lst[quarterhour] +'-'+ end_hour+':'+quarterhour_lst[(quarterhour+1)%4]
+                    occupancy_output_dict['color'] = color
+
+                    #Add dictionary to list of dictionaries
+                    occupancy_output_list_of_dicts.append(occupancy_output_dict)
     
+    #Save output predictions to yaml file
+    with open('plot_week.yaml','w') as file:
+        documents = yaml.dump(occupancy_output_list_of_dicts, file)
+
+    #Pass yaml file to pdfschedule to generate plot
+    #Run the following command: pdfschedule plot_week.yaml
+   
 if __name__ == "__main__":
     run_occupancy_forecaster(False)
 
@@ -154,6 +211,9 @@ if __name__ == "__main__":
     print('\n---- Example Predictions ----')
     print('Example Prediction (Wednesday at 4:15pm):', make_occupancy_prediction('Wednesday',16,15))
     print('Example Prediction (Sunday at 9:00pm):', make_occupancy_prediction('Sunday',21,0)) 
+
+    #Plot the prediction of a week
+    plot_week()
 
 
 # --- Helpful Tools ---
